@@ -1,0 +1,58 @@
+# Only namespaces labelled admission-tap=enabled are intercepted, so a broken
+# webhook can never lock you out of kube-system or the webhook's own namespace.
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: admission-tap
+webhooks:
+  - name: mutate-pods.admission-tap.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    reinvocationPolicy: Never
+    namespaceSelector:
+      matchLabels:
+        admission-tap: enabled
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE"]
+        resources: ["pods"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: admission-tap
+        namespace: admission-tap
+        path: /mutate
+        port: 443
+      caBundle: __CA_BUNDLE__
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: admission-tap
+webhooks:
+  # Enforcing: if the webhook is down, Pod create/update in an opted-in namespace fails.
+  - name: validate-pods.admission-tap.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    timeoutSeconds: 5
+    namespaceSelector:
+      matchLabels:
+        admission-tap: enabled
+    rules:
+      - apiGroups: [""]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["pods"]
+        scope: Namespaced
+    clientConfig:
+      service:
+        name: admission-tap
+        namespace: admission-tap
+        path: /validate
+        port: 443
+      caBundle: __CA_BUNDLE__
+

@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: admission-tap
+  namespace: admission-tap
+automountServiceAccountToken: false # the webhook never calls the API server
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: admission-tap
+  namespace: admission-tap
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: admission-tap
+  template:
+    metadata:
+      labels:
+        app: admission-tap
+    spec:
+      serviceAccountName: admission-tap
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: webhook
+          image: __IMAGE__
+          imagePullPolicy: IfNotPresent
+          args: ["-capture=__CAPTURE__"]
+          ports:
+            - name: https
+              containerPort: 8443
+            - name: http # capture query API (plain HTTP)
+              containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            # The capture store holds up to 32 MiB by default (-capture-max-bytes).
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { memory: 256Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: certs
+              mountPath: /etc/webhook/certs
+              readOnly: true
+            - name: api-token # bearer token for the query API (-api-token-file)
+              mountPath: /etc/webhook/api-token
+              readOnly: true
+      volumes:
+        - name: certs
+          secret:
+            secretName: admission-tap-tls
+        - name: api-token
+          secret:
+            secretName: admission-tap-api-token
+            items:
+              - key: token
+                path: token
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: admission-tap
+  namespace: admission-tap
+spec:
+  selector:
+    app: admission-tap
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+    - name: http
+      port: 80
+      targetPort: http

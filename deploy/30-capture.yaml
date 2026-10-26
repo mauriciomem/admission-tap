@@ -1,0 +1,42 @@
+# Observe-only, cluster-wide capture of every admission call.
+# - Scope: every group/version/resource/subresource and operation (incl. CONNECT
+#   for kubectl exec/attach/port-forward), cluster-scoped and namespaced, in all
+#   namespaces except the webhook's own (so it can always restart itself).
+# - failurePolicy Ignore + timeoutSeconds 2: this sits in front of EVERY write
+#   in the cluster, so a down or hung pod must neither block nor noticeably
+#   slow anything.
+# - Never seen, by Kubernetes design: GET/LIST/WATCH (admission only covers
+#   mutating requests) and Validating/MutatingWebhookConfiguration,
+#   ValidatingAdmissionPolicy(Binding) and MutatingAdmissionPolicy(Binding)
+#   objects (so a webhook can't lock you out of fixing it).
+# - No matchConditions: CEL there cannot see namespace labels, so pods in the
+#   labelled demo namespace are recorded by mutate, validate AND capture; each
+#   record says which webhook it came from.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: admission-tap-capture
+webhooks:
+  - name: capture-all.admission-tap.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Ignore
+    timeoutSeconds: 2
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values: ["admission-tap"]
+    rules:
+      - apiGroups: ["*"]
+        apiVersions: ["*"]
+        operations: ["*"]
+        resources: ["*/*"]
+        scope: "*"
+    clientConfig:
+      service:
+        name: admission-tap
+        namespace: admission-tap
+        path: /capture
+        port: 443
+      caBundle: __CA_BUNDLE__
