@@ -1,6 +1,9 @@
 IMG ?= admission-tap:dev
 CAPTURE ?= true
 NS  := admission-tap
+# Prefer docker if installed, else podman. Default target is amd64 nodes, whatever the build host is.
+CONTAINER ?= $(shell command -v docker >/dev/null 2>&1 && echo docker || echo podman)
+PLATFORM ?= linux/amd64
 
 .PHONY: test build image push certs api-token deploy demo logs api token undeploy
 
@@ -11,10 +14,10 @@ build:
 	CGO_ENABLED=0 go build -o bin/admission-tap .
 
 image:
-	docker build -t $(IMG) .
+	$(CONTAINER) build --platform $(PLATFORM) -t $(IMG) .
 
 push:
-	docker push $(IMG)
+	$(CONTAINER) push $(IMG)
 
 certs:
 	./hack/gen-certs.sh

@@ -13,7 +13,7 @@ Mutate and validate only act on namespaces labelled `admission-tap=enabled`. Cap
 ## Prerequisites
 
 - A Kubernetes cluster, 1.28 or newer, and `kubectl` with cluster-admin rights.
-- `docker`, `openssl` and `make`. `jq` is handy but optional.
+- `docker` or `podman`, `openssl` and `make`. `jq` is handy but optional.
 
 ## Quick start
 
@@ -24,7 +24,7 @@ export IMG=ghcr.io/<you>/admission-tap:v0.1.0
 make image push IMG=$IMG
 ```
 
-If your laptop is Apple Silicon and your nodes are amd64, run `docker buildx build --platform linux/amd64 -t $IMG --push .` instead. On kind, skip the push and run `kind load docker-image $IMG`.
+This builds for `linux/amd64` by default, with docker or podman, whichever is installed. Set `PLATFORM=linux/arm64` for arm64 nodes, or `CONTAINER=podman` to force podman. On kind, skip the push and run `kind load docker-image $IMG`.
 
 Deploy it:
 
@@ -105,7 +105,7 @@ Server flags (set in `args` in `deploy/10-server.yaml`):
 | `-capture-max-entries` | `1000` | Maximum records kept in memory |
 | `-capture-max-bytes` | `33554432` (32 MiB) | Maximum total size of records kept in memory |
 
-Make variables: `IMG` (default `admission-tap:dev`) and `CAPTURE` (default `true`). Besides `deploy`, `logs`, `api` and `undeploy`, there's `make token` (print the in-cluster token) and `make api-token` (generate `certs/api-token` if it's missing; `deploy` does this for you).
+Make variables: `IMG` (default `admission-tap:dev`), `CAPTURE` (default `true`), `PLATFORM` (default `linux/amd64`) and `CONTAINER` (`docker` if installed, otherwise `podman`). Besides `deploy`, `logs`, `api` and `undeploy`, there's `make token` (print the in-cluster token) and `make api-token` (generate `certs/api-token` if it's missing; `deploy` does this for you).
 
 Cluster-wide capture is noisy. Leases, events and Pod status updates arrive constantly, so the oldest records are evicted quickly. The container has a 256Mi memory limit. If you raise the store limits, raise that too.
 
