@@ -16,7 +16,7 @@ import (
 const apiHelp = `admission-tap capture API
 
 All /api/* endpoints need: Authorization: Bearer <token>
-(in-cluster token: make token)
+(the token is key "token" of Secret admission-tap-api-token in namespace admission-tap)
 
   GET    /healthz             liveness
   GET    /api/stats           counters and store usage
@@ -27,7 +27,8 @@ All /api/* endpoints need: Authorization: Bearer <token>
 /api/captures query parameters (optional, AND-combined, case-insensitive):
   webhook=mutate|validate|capture   namespace=  name=  kind=  resource=
   subresource=  operation=CREATE|UPDATE|DELETE|CONNECT  user= (substring)
-  allowed=true|false  errors=true  since=<RFC3339 time | id>
+  allowed=true|false  errors=true|false (true: only failed calls, false: only calls without error)
+  since=<RFC3339 time | id>
   limit=N (default 50; capped at 100 with payloads, at the store size with summary=true)
   summary=true (drop payloads)
 
@@ -188,9 +189,7 @@ func parseQuery(r *http.Request, maxLimit int) (keep func(*Record) bool, limit i
 		if perr != nil {
 			return nil, 0, false, fmt.Errorf("errors must be true or false")
 		}
-		if want {
-			add(func(r *Record) bool { return r.Error != "" })
-		}
+		add(func(r *Record) bool { return (r.Error != "") == want })
 	}
 	if v := q.Get("since"); v != "" {
 		if id, perr := strconv.ParseUint(v, 10, 64); perr == nil {

@@ -56,13 +56,16 @@ type AdmissionRequest struct {
 
 type Status struct {
 	Code    int32  `json:"code,omitempty"`
+	Reason  string `json:"reason,omitempty"`
 	Message string `json:"message,omitempty"`
 }
 
 type AdmissionResponse struct {
-	UID       string   `json:"uid"`
-	Allowed   bool     `json:"allowed"`
-	Result    *Status  `json:"result,omitempty"`
+	UID     string `json:"uid"`
+	Allowed bool   `json:"allowed"`
+	// Result is a metav1.Status. The v1 wire key is "status", not "result";
+	// with the wrong key the API server never shows the deny message.
+	Result    *Status  `json:"status,omitempty"`
 	Patch     []byte   `json:"patch,omitempty"` // encoding/json base64-encodes []byte, as the API requires
 	PatchType *string  `json:"patchType,omitempty"`
 	Warnings  []string `json:"warnings,omitempty"`
@@ -177,7 +180,20 @@ func validatePod(req *AdmissionRequest) *AdmissionResponse {
 }
 
 func deny(code int32, msg string) *AdmissionResponse {
-	return &AdmissionResponse{Allowed: false, Result: &Status{Code: code, Message: msg}}
+	return &AdmissionResponse{Allowed: false, Result: &Status{Code: code, Reason: statusReason(code), Message: msg}}
+}
+
+// statusReason maps an HTTP code to the metav1.StatusReason kubectl expects.
+func statusReason(code int32) string {
+	switch code {
+	case http.StatusForbidden:
+		return "Forbidden"
+	case http.StatusBadRequest:
+		return "BadRequest"
+	case http.StatusInternalServerError:
+		return "InternalError"
+	}
+	return ""
 }
 
 func usesLatest(image string) bool {

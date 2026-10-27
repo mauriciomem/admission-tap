@@ -1,30 +1,100 @@
 # Capturing
 
+## Opting a namespace in
+
+Nothing is captured until you label a namespace:
+
+```bash
+kubectl label namespace <ns> admission-tap/capture=enabled
+```
+
+To opt it out again, remove the label. The trailing `-` means "remove":
+
+```bash
+kubectl label namespace <ns> admission-tap/capture-
+```
+
+This label is independent of `admission-tap=enabled`, which only turns on the example mutate and validate webhooks. A namespace can have either, both, or neither.
+
+The `admission-tap` namespace is never captured, even if labelled. That way the server can always restart itself.
+
+
 ## What is captured
 
-The `admission-tap-capture` webhook receives every admission call in the cluster: all API groups, resources and subresources, all operations (CREATE, UPDATE, DELETE, CONNECT), cluster-scoped and namespaced, in every namespace except `admission-tap`. The mutate and validate webhooks are recorded too.
+In a labelled namespace, the `admission-tap-capture` webhook receives every write:
 
-Failed and malformed calls are also recorded, such as a wrong method, wrong content type, invalid JSON, or a body over 3 MiB. They have a non-200 `status` and an `error` message.
+- All resources, in every API group, including custom resources.
+- All subresources, such as `pods/exec`, `pods/status` and `deployments/scale`.
+- All operations: CREATE, UPDATE, DELETE and CONNECT. CONNECT covers `kubectl exec`, `attach` and `port-forward`.
 
-## What is never captured
+Changes to the labelled Namespace object itself are captured too.
 
-These limits come from Kubernetes itself, not from this webhook:
+Records follow the object's namespace, not the requester's. For example, when you create a Deployment in a labelled namespace, the Pods that the ReplicaSet controller creates there are captured as well.
 
-- GET, LIST and WATCH. Admission only covers writes. To see reads, use the API server audit log.
-- Webhook configurations and admission policy objects (`ValidatingWebhookConfiguration`, `MutatingWebhookConfiguration`, `ValidatingAdmissionPolicy`, `MutatingAdmissionPolicy` and their bindings). Kubernetes never sends these to webhooks, so a broken webhook can't stop you from fixing it.
+Failed and malformed calls are also recorded: a wrong method, a wrong content type, invalid JSON, or a body over 3 MiB. They have a non-200 `status` and an `error` message.
+
+Calls to `/mutate` and `/validate` are recorded the same way, in any namespace labelled `admission-tap=enabled`. They don't need the capture label.
+
+If the server runs with `-capture=false`, nothing is recorded at all.
+
+
+## What isn't captured
+
+Other namespaces, and cluster-scoped objects other than Namespaces: Nodes, ClusterRoles, CustomResourceDefinitions, PersistentVolumes and so on.
+
+These are never sent to any webhook, by Kubernetes design:
+
+- Reads: GET, LIST and WATCH. Admission only covers writes. To see reads, use the API server audit log.
+- Webhook configurations and admission policies, and their bindings. This way a broken webhook can't stop you from fixing it.
 - Requests rejected by authentication or authorization. They never reach admission.
 
-Also note that validating webhooks run in parallel. The capture record's `allowed` is capture's own answer, which is always `true`. It doesn't tell you whether another webhook denied the request. Look at the `validate` record for that.
+
+## Things to know
+
+### Turning the label on and off
+
+Capture starts and stops almost immediately after you add or remove the label.
+
+For changes to the Namespace object itself, the API server looks at the new labels. So the update that adds the label is captured, and the one that removes it isn't.
+
+### The same call recorded more than once
+
+The demo namespace has both labels. A Pod created there is recorded three times: by mutate, by validate and by capture.
+
+Each record has a `webhook` field, so you can tell them apart or filter with `webhook=capture`.
+
+### Capture's `allowed` is always true
+
+Validating webhooks run in parallel. The capture record's `allowed` is capture's own answer, which is always `true`.
+
+It doesn't tell you whether another webhook denied the request. Look at the `validate` record for that.
+
+### Noise
+
+Busy namespaces produce a steady stream of Events, Pod status updates and controller writes. The store is bounded, so older records get evicted. Filter narrowly and query soon, or raise the limits (see [Configuration](configuration.md)).
+
 
 ## Redaction
 
-With `-redact-secrets=true` (the default), each value in a core/v1 Secret's `data` and `stringData` is replaced with `<redacted>` in `request.object` and `request.oldObject`. The `kubectl.kubernetes.io/last-applied-configuration` annotation is redacted too, because `kubectl apply` stores the whole manifest there. If redaction fails, the whole request body is replaced with `"<redaction failed>"` instead of being stored in clear. The `Authorization`, `Proxy-Authorization`, `Cookie` and `X-Api-Key` HTTP headers are always redacted.
+With `-redact-secrets=true`, the default, core/v1 Secrets are redacted in `request.object` and `request.oldObject`:
 
-Nothing else is redacted. Secrets in env vars, ConfigMaps, exec commands, annotations or custom resources end up in the records as-is. Only the record is redacted. The webhook logic always sees the original request.
+- Each value in `data` and `stringData` becomes `<redacted>`.
+- The `kubectl.kubernetes.io/last-applied-configuration` annotation becomes `<redacted>`, because `kubectl apply` stores the whole manifest there.
+
+`stringData` never shows up in a capture in practice: the API server converts it to `data` before validating webhooks run. Redaction still covers it, for safety.
+
+If redaction fails, the whole request body is stored as `"<redaction failed>"` rather than in clear.
+
+The `Authorization`, `Proxy-Authorization`, `Cookie` and `X-Api-Key` HTTP headers are always redacted.
+
+Nothing else is redacted. Secrets in env vars, ConfigMaps, exec commands, annotations or custom resources are recorded as-is.
+
+Only the record is redacted. The webhook logic always sees the original request.
+
 
 ## Record format
 
-Each record is added to the in-memory store and, by default, written to stdout as one JSON line. With `-capture-stdout=summary` stdout gets only the summary fields plus `error`; with `off` it gets nothing. The store always keeps the full record. The server's own logs go to stderr, also as JSON. Capture lines are the ones with a `webhook` field. Under load, stdout lines can appear slightly out of id order; the store is always in order.
+Each call produces one record:
 
 ```json
 {
@@ -49,77 +119,68 @@ Each record is added to the in-memory store and, by default, written to stdout a
 }
 ```
 
-`error` appears only on failed calls. The summary fields (`uid` to `allowed`) are empty if the body couldn't be parsed. `request` holds the raw body, or the body as a JSON string if it wasn't valid JSON.
+A few details:
 
-The store is a FIFO. When either `-capture-max-entries` or `-capture-max-bytes` is exceeded, the oldest records are evicted. A record larger than the byte limit is counted but not stored. Everything is lost when the Pod restarts.
+- `subResource` appears for subresource calls, such as `exec`.
+- `error` appears only on failed calls.
+- The summary fields, `uid` to `allowed`, are empty if the body couldn't be parsed.
+- `request` is the raw body. If the body wasn't valid JSON, it's stored as a JSON string.
 
-## Query API
 
-The API is plain HTTP on port 8080 (Service port 80). Every `/api/*` request needs `Authorization: Bearer <token>`; without it you get 401 with `WWW-Authenticate: Bearer`. `/` and `/healthz` are open. Responses are pretty-printed JSON.
+## Where records go
 
-| Method | Path | Returns |
-|---|---|---|
-| GET | `/` | Help text |
-| GET | `/healthz` | `ok` |
-| GET | `/api/stats` | Counters: stored, storedBytes, total, evicted, denied, errors, byWebhook, byOperation, and the limits |
-| GET | `/api/captures` | `{"count": N, "items": [...]}`, newest first |
-| GET | `/api/captures/{id}` | One full record, or 404 if it never existed or was evicted |
-| DELETE | `/api/captures` | Clears the store and returns `{"removed": N}`. Counters in `/api/stats` are kept |
+### The in-memory store
 
-Filters for `/api/captures` are optional and combined with AND. Matching is case-insensitive.
+Every record is kept in a bounded, in-memory store, which the [query API](query-api.md) serves.
 
-- `webhook`: `mutate`, `validate` or `capture`.
-- `namespace`, `name`, `kind`, `resource`, `subresource`, `operation`: exact match. `kind` is the Kind (`Pod`), `resource` is the plural resource (`pods`).
-- `user`: substring of the username.
-- `allowed=true|false`. Records with no response (errors) never match.
-- `errors=true`: only failed calls.
-- `since`: a record id (returns newer ids) or an RFC3339 time.
-- `limit`: default 50. Full records are capped at 100; with `summary=true` the cap is the store size (`-capture-max-entries`). Larger values are clamped, not rejected.
-- `summary=true`: drop the HTTP metadata and payloads.
+The store is first in, first out. When it goes over `-capture-max-entries` or `-capture-max-bytes`, the oldest records are evicted. A record larger than the byte limit is counted but not stored.
 
-Invalid values return 400 with `{"error": "..."}`.
+Everything is lost when the Pod restarts.
 
-## Examples
+### Stdout
 
-These assume `make api` is running and `export TOKEN=$(make -s token)`. From inside the cluster, use `http://admission-tap.admission-tap.svc` instead of `localhost:8080` (see the README for passing the token to a curl Pod).
+By default, each record is also written to stdout as one JSON line. `-capture-stdout` controls this:
 
-```bash
-A="Authorization: Bearer $TOKEN"
+- `full`, the default, writes the whole record.
+- `summary` writes the same payload-free view as `?summary=true` on the [query API](query-api.md): id, time, webhook, status, `error`, `uid`, operation, kind, resource, namespace, name, `username`, `groups`, `dryRun`, `allowed` and duration. No `http`, `request` or `response`.
+- `off` writes nothing.
 
-# What's happening right now
-curl -s -H "$A" 'localhost:8080/api/captures?summary=true&limit=20'
+The store always keeps full records, whatever the stdout mode.
 
-# Who deleted a Secret
-curl -s -H "$A" 'localhost:8080/api/captures?kind=Secret&operation=DELETE&summary=true'
+The server's own logs go to stderr, also as JSON. Capture lines are the ones with a `webhook` field.
 
-# Commands run with kubectl exec
-curl -s -H "$A" 'localhost:8080/api/captures?subresource=exec&webhook=capture' | jq -c '.items[].request.request.object.command'
+Under load, stdout lines can appear slightly out of id order. The store is always in order.
 
-# Decode the patch from the mutating webhook
-curl -s -H "$A" 'localhost:8080/api/captures?webhook=mutate&limit=1' | jq -r '.items[0].response.response.patch' | base64 -d
+### Reading the logs with jq
 
-# Poll for new records since id 120
-curl -s -H "$A" 'localhost:8080/api/captures?since=120&summary=true'
-
-# Calls that failed
-curl -s -H "$A" 'localhost:8080/api/captures?errors=true'
-```
-
-From the logs instead of the API:
+`select(.webhook)` keeps capture lines and drops the server's own logs:
 
 ```bash
 kubectl -n admission-tap logs deploy/admission-tap \
   | jq -c 'select(.webhook) | {id, webhook, operation, resource: .resource.resource, subResource, namespace, name, username, allowed}'
+```
 
-# Save everything to a file
+Save everything to a file:
+
+```bash
 kubectl -n admission-tap logs deploy/admission-tap | jq -c 'select(.webhook)' > captures.jsonl
 ```
 
-Some things worth trying while you watch:
+
+## Things worth trying
+
+With the demo namespace in place, run these and watch the logs:
 
 ```bash
-kubectl -n admission-tap-demo exec web-ok -- id                                   # CONNECT on pods/exec
-kubectl -n admission-tap-demo run dry --image=nginx:1.27 --dry-run=server         # dryRun: true
-kubectl -n admission-tap-demo create deployment web --image=nginx:1.27            # Pods arrive as the replicaset-controller
-kubectl -n admission-tap-demo label pod web-ok tier=frontend                      # UPDATE with oldObject
+# CONNECT on pods/exec
+kubectl -n admission-tap-demo exec web-ok -- id
+
+# A request with dryRun: true
+kubectl -n admission-tap-demo run dry --image=nginx:1.27 --dry-run=server
+
+# Pods created by the replicaset-controller
+kubectl -n admission-tap-demo create deployment web --image=nginx:1.27
+
+# An UPDATE with oldObject
+kubectl -n admission-tap-demo label pod web-ok tier=frontend
 ```

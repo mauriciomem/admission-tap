@@ -19,8 +19,14 @@ spec:
     metadata:
       labels:
         app: admission-tap
+      annotations:
+        # The server reads the Secrets only at startup. deploy.sh fills in a hash
+        # of the cert, key and token, so changing any of them rolls the Pod.
+        checksum/secrets: "__SECRETS_CHECKSUM__"
     spec:
       serviceAccountName: admission-tap
+      # Must cover -shutdown-delay (5s) plus the 10s graceful shutdown timeout.
+      terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -36,12 +42,13 @@ spec:
               containerPort: 8443
             - name: http # capture query API (plain HTTP)
               containerPort: 8080
-          readinessProbe:
+          readinessProbe: # /healthz returns 503 during -shutdown-delay
             httpGet:
               path: /healthz
               port: https
               scheme: HTTPS
-          livenessProbe:
+            periodSeconds: 2
+          livenessProbe: # 20s * 3 failures = 60s, longer than -shutdown-delay
             httpGet:
               path: /healthz
               port: https

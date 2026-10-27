@@ -59,12 +59,15 @@ type TLSInfo struct {
 	ServerName  string `json:"serverName,omitempty"`
 }
 
-// summary is the payload-free view returned by /api/captures?summary=true.
+// summary is the payload-free view returned by /api/captures?summary=true and
+// printed by -capture-stdout=summary (one struct, so both always agree).
 type summary struct {
 	ID          uint64                `json:"id"`
 	Time        time.Time             `json:"time"`
 	Webhook     string                `json:"webhook"`
 	Status      int                   `json:"status"`
+	Error       string                `json:"error,omitempty"`
+	UID         string                `json:"uid,omitempty"`
 	Operation   string                `json:"operation,omitempty"`
 	Kind        *GroupVersionKind     `json:"kind,omitempty"`
 	Resource    *GroupVersionResource `json:"resource,omitempty"`
@@ -72,13 +75,20 @@ type summary struct {
 	Namespace   string                `json:"namespace,omitempty"`
 	Name        string                `json:"name,omitempty"`
 	Username    string                `json:"username,omitempty"`
+	Groups      []string              `json:"groups,omitempty"`
+	DryRun      *bool                 `json:"dryRun,omitempty"`
 	Allowed     *bool                 `json:"allowed,omitempty"`
 	DurationMs  float64               `json:"durationMs"`
 }
 
 func (r *Record) summary() summary {
-	return summary{r.ID, r.Time, r.Webhook, r.Status, r.Operation, r.Kind, r.Resource,
-		r.SubResource, r.Namespace, r.Name, r.Username, r.Allowed, r.DurationMs}
+	return summary{
+		ID: r.ID, Time: r.Time, Webhook: r.Webhook, Status: r.Status, Error: r.Error,
+		UID: r.UID, Operation: r.Operation, Kind: r.Kind, Resource: r.Resource,
+		SubResource: r.SubResource, Namespace: r.Namespace, Name: r.Name,
+		Username: r.Username, Groups: r.Groups, DryRun: r.DryRun, Allowed: r.Allowed,
+		DurationMs: r.DurationMs,
+	}
 }
 
 func httpInfo(r *http.Request) HTTPInfo {
@@ -191,12 +201,6 @@ type capturer struct {
 	mu     sync.Mutex // guards writes to out
 }
 
-// stdoutLine is what -capture-stdout=summary prints.
-type stdoutLine struct {
-	summary
-	Error string `json:"error,omitempty"`
-}
-
 func (c *capturer) record(rec *Record) {
 	if !c.enabled {
 		return
@@ -222,7 +226,7 @@ func (c *capturer) record(rec *Record) {
 	case stdoutOff:
 		line = nil
 	case stdoutSummary:
-		line, _ = json.Marshal(stdoutLine{rec.summary(), rec.Error})
+		line, _ = json.Marshal(rec.summary())
 	}
 	if c.out != nil && line != nil {
 		c.mu.Lock()

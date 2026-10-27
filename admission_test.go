@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -130,6 +131,37 @@ func TestHandler(t *testing.T) {
 	}
 	if c.store.get(1) == nil {
 		t.Fatal("record not stored")
+	}
+}
+
+// The v1 wire key for the deny reason is "status" (not "result"); kubectl
+// shows "denied the request without explanation" otherwise.
+func TestDeniedReviewWireFormat(t *testing.T) {
+	review := strings.Replace(podReview, `"spec":{}`, `"spec":{"containers":[{"name":"web","image":"nginx:latest"}]}`, 1)
+	c := newTestCapturer(&bytes.Buffer{})
+	rec := post(c.handler("validate", validatePod), "/validate", "application/json", review)
+	if rec.Code != 200 {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body)
+	}
+	body := rec.Body.String()
+	wantStatus := `"status":{"code":403,"reason":"Forbidden","message":"admission-tap: images must use an explicit tag other than :latest: web (nginx:latest)"}`
+	if !strings.Contains(body, wantStatus) {
+		t.Errorf("want %s in %s", wantStatus, body)
+	}
+	if strings.Contains(body, `"result"`) {
+		t.Errorf("response has a result key: %s", body)
+	}
+	if !strings.Contains(body, `"allowed":false`) || !strings.Contains(body, `"uid":"abc-123"`) {
+		t.Errorf("unexpected response: %s", body)
+	}
+}
+
+func TestStatusReason(t *testing.T) {
+	cases := map[int32]string{403: "Forbidden", 400: "BadRequest", 500: "InternalError", 418: ""}
+	for code, want := range cases {
+		if got := deny(code, "x").Result; got.Code != code || got.Reason != want {
+			t.Errorf("deny(%d) = %+v, want reason %q", code, got, want)
+		}
 	}
 }
 
@@ -312,6 +344,9 @@ func TestCaptureStdoutModes(t *testing.T) {
 				!strings.Contains(lines[0], `"name":"p"`) || !strings.Contains(lines[1], `"error":"Content-Type`) {
 				t.Errorf("summary: %s", out)
 			}
+			if !strings.Contains(lines[0], `"uid":"abc-123"`) || !strings.Contains(lines[0], `"groups":["devs"]`) {
+				t.Errorf("summary lacks uid/groups: %s", lines[0])
+			}
 			for _, l := range lines {
 				if !json.Valid([]byte(l)) {
 					t.Errorf("summary line not JSON: %s", l)
@@ -359,8 +394,27 @@ func TestStoreKeepsIDOrder(t *testing.T) {
 	}
 }
 
+func TestHealthzFlipsDuringShutdown(t *testing.T) {
+	var ready atomic.Bool
+	ready.Store(true)
+	mux := newWebhookMux(newTestCapturer(&bytes.Buffer{}), &ready)
+	get := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+		return rec
+	}
+	if rec := get(); rec.Code != 200 || rec.Body.String() != "ok" {
+		t.Fatalf("ready: %d %s", rec.Code, rec.Body)
+	}
+	ready.Store(false)
+	if rec := get(); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("not ready: want 503, got %d", rec.Code)
+	}
+}
+
 func TestWebhookMuxHasNoAPI(t *testing.T) {
-	mux := newWebhookMux(newTestCapturer(&bytes.Buffer{}))
+	var ready atomic.Bool
+	mux := newWebhookMux(newTestCapturer(&bytes.Buffer{}), &ready)
 	for _, p := range []string{"/api/captures", "/api/stats", "/"} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))

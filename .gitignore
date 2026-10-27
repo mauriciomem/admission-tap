@@ -1,2 +1,6 @@
 bin/
 certs/
+
+# Local credentials, never commit
+kubeconfig*.yaml
+aws-account.md

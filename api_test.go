@@ -68,6 +68,7 @@ func TestAPIList(t *testing.T) {
 		"?allowed=false":               {2},
 		"?allowed=true":                {3, 1},
 		"?errors=true":                 {4},
+		"?errors=false":                {3, 2, 1},
 		"?since=2":                     {4, 3},
 		"?since=2026-01-01T00:01:00Z":  {4, 3},
 		"?limit=2":                     {4, 3},
@@ -103,7 +104,7 @@ func TestAPISummary(t *testing.T) {
 	_, body := do(t, h, http.MethodGet, "/api/captures?summary=true&limit=4")
 	for _, it := range body["items"].([]any) {
 		m := it.(map[string]any)
-		for _, k := range []string{"request", "response", "http", "error", "uid"} {
+		for _, k := range []string{"request", "response", "http"} {
 			if _, ok := m[k]; ok {
 				t.Errorf("summary contains %q", k)
 			}
@@ -111,6 +112,24 @@ func TestAPISummary(t *testing.T) {
 		if _, ok := m["durationMs"]; !ok {
 			t.Error("summary missing durationMs")
 		}
+		if _, ok := m["error"]; ok != (m["status"] == float64(400)) {
+			t.Errorf("summary error key present=%v for %v", ok, m)
+		}
+	}
+	// A real call carries uid, groups, dryRun and, for failures, error.
+	c := newTestCapturer(&bytes.Buffer{})
+	dry := `{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionReview","request":{"uid":"u-1","kind":{"version":"v1","kind":"Pod"},"resource":{"version":"v1","resource":"pods"},"operation":"CREATE","dryRun":true,"userInfo":{"username":"alice","groups":["devs","ops"]}}}`
+	post(c.handler("capture", allow), "/capture", "application/json", dry)
+	post(c.handler("capture", allow), "/capture", "text/plain", "x")
+	_, body = do(t, newAPIMux(c, ""), http.MethodGet, "/api/captures?summary=true")
+	items := body["items"].([]any)
+	bad, good := items[0].(map[string]any), items[1].(map[string]any)
+	groups, _ := good["groups"].([]any)
+	if good["uid"] != "u-1" || len(groups) != 2 || good["dryRun"] != true || good["error"] != nil {
+		t.Errorf("summary of good call: %v", good)
+	}
+	if bad["error"] == nil {
+		t.Errorf("summary of failed call lacks error: %v", bad)
 	}
 	_, body = do(t, h, http.MethodGet, "/api/captures?limit=4")
 	if _, ok := body["items"].([]any)[3].(map[string]any)["request"]; !ok {

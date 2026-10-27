@@ -20,12 +20,13 @@ func main() {
 	certFile := flag.String("tls-cert", "/etc/webhook/certs/tls.crt", "TLS certificate")
 	keyFile := flag.String("tls-key", "/etc/webhook/certs/tls.key", "TLS private key")
 	apiAddr := flag.String("api-addr", ":8080", "plain-HTTP query API listen address (empty disables it)")
-	capture := flag.Bool("capture", true, "record every admission call to stdout and the in-memory store")
+	capture := flag.Bool("capture", true, "record the admission calls this server receives to stdout and the in-memory store (which calls arrive is decided by the webhook configurations)")
 	redact := flag.Bool("redact-secrets", true, "redact Secret data/stringData and last-applied annotation in captures")
 	maxEntries := flag.Int("capture-max-entries", 1000, "maximum records kept in memory")
 	maxBytes := flag.Int("capture-max-bytes", 32<<20, "maximum total size (marshalled JSON bytes) of records kept in memory")
 	tokenFile := flag.String("api-token-file", "/etc/webhook/api-token/token", "file holding the query API bearer token (empty: API has NO auth)")
 	stdoutMode := flag.String("capture-stdout", stdoutFull, "what each capture writes to stdout: full|summary|off")
+	shutdownDelay := flag.Duration("shutdown-delay", 5*time.Second, "on SIGTERM, report not-ready on /healthz and keep serving this long before shutting down, so endpoint updates reach the API server (0 disables)")
 	flag.Parse()
 
 	// Captures go to stdout, operational logs to stderr; both as JSON lines so
@@ -52,9 +53,11 @@ func main() {
 	if err != nil {
 		fatal("load TLS key pair", "err", err)
 	}
+	var ready atomic.Bool
+	ready.Store(true)
 	servers := []*http.Server{{
 		Addr:      *addr,
-		Handler:   newWebhookMux(c),
+		Handler:   newWebhookMux(c, &ready),
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12},
 		// The API server sends small bodies and waits at most timeoutSeconds.
 		ReadHeaderTimeout: 10 * time.Second,
@@ -101,6 +104,14 @@ func main() {
 	}
 
 	<-ctx.Done()
+	// Rolling update: the API server keeps sending calls until the endpoint
+	// removal reaches it. Report not-ready, keep serving for the delay, then
+	// shut down. (Skipped when a server already failed: nothing to drain.)
+	ready.Store(false)
+	if *shutdownDelay > 0 && !failed.Load() {
+		slog.Info("shutting down", "delay", shutdownDelay.String())
+		time.Sleep(*shutdownDelay)
+	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	for _, srv := range servers {
@@ -113,12 +124,19 @@ func main() {
 }
 
 // newWebhookMux serves the TLS port: webhooks and a probe, never /api.
-func newWebhookMux(c *capturer) *http.ServeMux {
+// /healthz answers 503 once ready is false (shutdown has begun).
+func newWebhookMux(c *capturer, ready *atomic.Bool) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mutate", c.handler("mutate", mutatePod))
 	mux.HandleFunc("/validate", c.handler("validate", validatePod))
 	mux.HandleFunc("/capture", c.handler("capture", allow))
-	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
+	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		if !ready.Load() {
+			http.Error(w, "shutting down", http.StatusServiceUnavailable)
+			return
+		}
+		w.Write([]byte("ok"))
+	})
 	return mux
 }
 
