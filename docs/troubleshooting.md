@@ -54,34 +54,46 @@ The API server can't reach the Pod network. Check the CNI, firewalls between the
 The image wasn't pushed, is private, was built for the wrong architecture, or wasn't loaded into kind. Check `IMG`, the registry's visibility, and `PLATFORM`.
 
 
-## Capture
+## Records
 
 ### No `capture` records
 
 Check, in order:
 
 1. The namespace has the label. `kubectl get namespace <ns> --show-labels` should list `admission-tap/capture=enabled`.
-2. The label was only just added. Capture normally starts almost immediately; if it doesn't, check the label with `kubectl get ns <ns> --show-labels`.
-3. The object is in that namespace. Cluster-scoped objects other than Namespaces are never captured.
+2. The namespace isn't `admission-tap`. It's never captured, even if labelled.
+3. The object is in that namespace. Cluster-scoped objects other than Namespaces are never captured, and reads never reach admission (see [What isn't captured](capture.md#what-isnt-captured)).
 4. The capture webhook exists. If you deployed with `CAPTURE=false`, it doesn't:
 
    ```bash
    kubectl get validatingwebhookconfiguration admission-tap-capture
    ```
 
-5. `captureEnabled` is `true` in `/api/stats`.
+5. `recordEnabled` is `true` in `/api/stats`. If it's `false`, the server runs with `-record=false` and records nothing at all.
 
 Capture uses `failurePolicy: Ignore`, so failed calls don't show up as errors anywhere in kubectl. Look in the API server logs.
 
-### Records still arrive after removing the label
+### No `mutate` or `validate` records
+
+1. The namespace has the label `admission-tap=enabled`. The capture label doesn't turn these on.
+2. The object is a Pod. These webhooks see nothing else.
+3. The webhooks exist. If you deployed with `MUTATE_VALIDATE=false`, they don't:
+
+   ```bash
+   kubectl get mutatingwebhookconfiguration,validatingwebhookconfiguration admission-tap
+   ```
+
+4. `recordEnabled` is `true` in `/api/stats`.
+
+### Capture records still arrive after removing the label
 
 Capture normally stops almost immediately after you remove the label. If records still arrive, check that the label is really gone (`kubectl get ns <ns> --show-labels`). Records for calls that were already in flight can also arrive just after.
 
 ### Your record is gone
 
-Older records are evicted when the store is full, and everything is lost when the Pod restarts.
+Older records are evicted when the store is full, and everything is lost when the Pod restarts. `evicted` in `/api/stats` counts the records dropped so far.
 
-Filter more narrowly and query sooner, or raise the store limits and the memory limit (see [Configuration](configuration.md)).
+Filter more narrowly and query sooner, or raise the store limits and the memory limit (see [Configuration](configuration.md#recording)).
 
 
 ## Query API

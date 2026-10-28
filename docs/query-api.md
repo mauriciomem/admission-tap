@@ -2,6 +2,8 @@
 
 The server keeps recent records in memory and serves them over plain HTTP on port 8080. The Service exposes it on port 80.
 
+There's one record per call the server receives, from any of its three webhooks. [Records](records.md) describes their format.
+
 The API is never served on the webhook port (8443).
 
 
@@ -54,22 +56,22 @@ The single quotes make sure `$TOKEN` is expanded inside the Pod, not by your she
 
 `GET /api/stats` returns counters and store usage:
 
-- `captureEnabled` and `redactSecrets`, the current settings.
+- `recordEnabled` and `redactSecrets`, the current settings of `-record` and `-redact-secrets`.
 - `stored` and `storedBytes`, what the store holds now.
 - `maxEntries` and `maxBytes`, the store limits.
 - `total`, `evicted`, `denied` and `errors`, counted since the server started.
-- `byWebhook` and `byOperation`, totals broken down.
+- `byWebhook` and `byOperation`, totals broken down, such as `{"capture": 120, "mutate": 3, "validate": 3}`.
 
-`GET /api/captures` returns `{"count": N, "items": [...]}`, newest first. See the filters below.
+`GET /api/records` returns `{"count": N, "items": [...]}`, newest first. See the filters below.
 
-`GET /api/captures/{id}` returns one full record. It returns 404 if the record never existed or was evicted.
+`GET /api/records/{id}` returns one full record. It returns 404 if the record never existed or was evicted.
 
-`DELETE /api/captures` clears the store and returns `{"removed": N}`. The counters in `/api/stats` are kept.
+`DELETE /api/records` clears the store and returns `{"removed": N}`. The counters in `/api/stats` are kept.
 
 
 ## Filters
 
-Filters for `/api/captures` are optional. They combine with AND, and matching ignores case.
+Filters for `/api/records` are optional. They combine with AND, and matching ignores case.
 
 Exact match:
 
@@ -89,7 +91,7 @@ Other filters:
 
 Output:
 
-- `summary=true` drops the HTTP metadata and the payloads. It keeps `uid`, `username`, `groups`, `dryRun`, `allowed` and, for failed calls, `error`.
+- `summary=true` drops the HTTP metadata and the payloads (see [Summaries](records.md#summaries)). It keeps `uid`, `username`, `groups`, `dryRun`, `allowed` and, for failed calls, `error`.
 - `limit` defaults to 50. Full records are capped at 100. With `summary=true`, the cap is the store size. Larger values are lowered to the cap, not rejected.
 
 Invalid values return 400 with `{"error": "..."}`. A missing or wrong token returns 401.
@@ -106,49 +108,61 @@ A="Authorization: Bearer $TOKEN"
 What's happening right now:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?summary=true&limit=20'
+curl -s -H "$A" 'localhost:8080/api/records?summary=true&limit=20'
 ```
 
 Who deleted a Secret:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?kind=Secret&operation=DELETE&summary=true'
+curl -s -H "$A" 'localhost:8080/api/records?kind=Secret&operation=DELETE&summary=true'
 ```
 
-Requests that were denied:
+Requests the validate webhook denied:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?allowed=false&summary=true'
+curl -s -H "$A" 'localhost:8080/api/records?webhook=validate&allowed=false&summary=true'
+```
+
+Everything capture saw in one namespace:
+
+```bash
+curl -s -H "$A" 'localhost:8080/api/records?webhook=capture&namespace=admission-tap-capture-demo&summary=true'
+```
+
+One record in full, by id:
+
+```bash
+curl -s -H "$A" localhost:8080/api/records/42
 ```
 
 Calls that failed:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?errors=true'
+curl -s -H "$A" 'localhost:8080/api/records?errors=true'
 ```
 
 Poll for records newer than id 120:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?since=120&summary=true'
+curl -s -H "$A" 'localhost:8080/api/records?since=120&summary=true'
 ```
 
 Commands run with `kubectl exec`. jq digs the command out of each recorded request:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?subresource=exec&webhook=capture' \
+curl -s -H "$A" 'localhost:8080/api/records?subresource=exec&webhook=capture' \
   | jq -c '.items[].request.request.object.command'
 ```
 
-The patch from the mutating webhook. Patches are base64-encoded, so jq extracts it and `base64 -d` decodes it:
+The latest patch from the mutate webhook. Patches are base64-encoded, so jq extracts it and `base64 -d` decodes it:
 
 ```bash
-curl -s -H "$A" 'localhost:8080/api/captures?webhook=mutate&limit=1' \
+curl -s -H "$A" 'localhost:8080/api/records?webhook=mutate&limit=1' \
   | jq -r '.items[0].response.response.patch' | base64 -d
 ```
 
 Clear the store:
 
 ```bash
-curl -s -X DELETE -H "$A" localhost:8080/api/captures
+curl -s -X DELETE -H "$A" localhost:8080/api/records
 ```

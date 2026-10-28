@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-config
+  namespace: admission-tap-capture-demo
+data:
+  greeting: hello

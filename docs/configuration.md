@@ -1,8 +1,22 @@
 # Configuration
 
-The server is configured with command-line flags. In the cluster, they go in `args` in `deploy/10-server.yaml`. After editing, re-run `scripts/deploy.sh`.
+The server is configured with command-line flags.
 
-The manifest only sets `-capture`, from the script's `CAPTURE` variable. Everything else uses the defaults below.
+`deploy/10-server.yaml` sets no args, so in the cluster every flag uses the default below. Recording is on.
+
+
+## Setting flags
+
+Add an `args` list to the `webhook` container in `deploy/10-server.yaml`, then re-run `scripts/deploy.sh`. For example, to write only summaries to stdout and keep more records:
+
+```yaml
+      containers:
+        - name: webhook
+          image: __IMAGE__
+          args: ["-record-stdout=summary", "-record-max-entries=5000"]
+```
+
+Changing the args changes the Pod template, so the server restarts with the new flags.
 
 
 ## Listeners and TLS
@@ -21,19 +35,19 @@ About `-api-token-file`:
 - If the flag is set to an empty string, the API runs without authentication, and the server logs a warning.
 
 
-## Capture
+## Recording
 
 | Flag | Default | Description |
 |---|---|---|
-| `-capture` | `true` | Record the admission calls this server receives to stdout and the store. Which calls arrive is decided by the webhook configurations. With `false`, nothing is recorded. |
-| `-capture-stdout` | `full` | What each record writes to stdout: `full`, `summary` or `off`. |
+| `-record` | `true` | Record every admission call the server receives, from all three webhooks, to stdout and the store. With `false`, nothing is recorded. |
+| `-record-stdout` | `full` | What each record writes to stdout: `full`, `summary` or `off`. Any other value stops the server at startup. |
 | `-redact-secrets` | `true` | Redact core/v1 Secret values and the last-applied annotation. |
-| `-capture-max-entries` | `1000` | Maximum number of records kept in memory. |
-| `-capture-max-bytes` | `33554432` (32 MiB) | Maximum total size of records kept in memory. |
+| `-record-max-entries` | `1000` | Maximum number of records kept in memory. |
+| `-record-max-bytes` | `33554432` (32 MiB) | Maximum total size of records kept in memory. |
 
-`-capture=false` only stops recording. The webhooks keep answering. To stop the API server from calling `/capture` at all, deploy with `CAPTURE=false` (see [Deploying](deploying.md)).
+`-record=false` only stops recording. The webhooks keep answering. To stop the API server from calling a webhook at all, don't register it: deploy with `CAPTURE=false` or `MUTATE_VALIDATE=false` (see [Deploying](deploying.md#choosing-which-webhooks-to-register)).
 
-[Capturing](capturing.md) explains redaction, the stdout modes and eviction.
+[Records](records.md) explains redaction, the stdout modes and eviction.
 
 
 ## Shutdown
@@ -49,4 +63,4 @@ During a rolling update the API server keeps sending calls to the old Pod until 
 
 The container has a 256Mi memory limit. With the default store limits, that's plenty.
 
-If you raise `-capture-max-bytes`, raise the limit in `deploy/10-server.yaml` too.
+If you raise `-record-max-bytes`, raise the limit in `deploy/10-server.yaml` too.

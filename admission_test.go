@@ -72,8 +72,8 @@ func TestMutatePod(t *testing.T) {
 
 const podReview = `{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionReview","request":{"uid":"abc-123","kind":{"group":"","version":"v1","kind":"Pod"},"resource":{"group":"","version":"v1","resource":"pods"},"namespace":"demo","name":"p","operation":"CREATE","userInfo":{"username":"alice","groups":["devs"]},"object":{"metadata":{"name":"p"},"spec":{}}}}`
 
-func newTestCapturer(out *bytes.Buffer) *capturer {
-	return &capturer{enabled: true, redact: true, out: out, store: newStore(100, 1<<20)}
+func newTestRecorder(out *bytes.Buffer) *recorder {
+	return &recorder{enabled: true, redact: true, out: out, store: newStore(100, 1<<20)}
 }
 
 func post(h http.Handler, path, ctype, body string) *httptest.ResponseRecorder {
@@ -88,8 +88,8 @@ func post(h http.Handler, path, ctype, body string) *httptest.ResponseRecorder {
 }
 
 func TestHandler(t *testing.T) {
-	var captured bytes.Buffer
-	c := newTestCapturer(&captured)
+	var stdout bytes.Buffer
+	c := newTestRecorder(&stdout)
 	rec := post(c.handler("mutate", mutatePod), "/mutate", "application/json", podReview)
 
 	if rec.Code != 200 {
@@ -112,8 +112,8 @@ func TestHandler(t *testing.T) {
 		Request  AdmissionReview `json:"request"`
 		Response AdmissionReview `json:"response"`
 	}
-	if err := json.Unmarshal(captured.Bytes(), &line); err != nil {
-		t.Fatalf("capture line not JSON: %v: %s", err, captured.String())
+	if err := json.Unmarshal(stdout.Bytes(), &line); err != nil {
+		t.Fatalf("record line not JSON: %v: %s", err, stdout.String())
 	}
 	r := line.Record
 	switch {
@@ -124,10 +124,10 @@ func TestHandler(t *testing.T) {
 		r.UID != "abc-123", r.Operation != "CREATE", r.Kind.Kind != "Pod", r.Resource.Resource != "pods",
 		r.Namespace != "demo", r.Name != "p", r.Username != "alice", len(r.Groups) != 1,
 		r.Allowed == nil || !*r.Allowed:
-		t.Fatalf("unexpected record: %s", captured.String())
+		t.Fatalf("unexpected record: %s", stdout.String())
 	}
 	if line.Request.Request.UserInfo.Username != "alice" || line.Response.Response.UID != "abc-123" {
-		t.Fatalf("payloads not captured: %s", captured.String())
+		t.Fatalf("payloads not recorded: %s", stdout.String())
 	}
 	if c.store.get(1) == nil {
 		t.Fatal("record not stored")
@@ -138,7 +138,7 @@ func TestHandler(t *testing.T) {
 // shows "denied the request without explanation" otherwise.
 func TestDeniedReviewWireFormat(t *testing.T) {
 	review := strings.Replace(podReview, `"spec":{}`, `"spec":{"containers":[{"name":"web","image":"nginx:latest"}]}`, 1)
-	c := newTestCapturer(&bytes.Buffer{})
+	c := newTestRecorder(&bytes.Buffer{})
 	rec := post(c.handler("validate", validatePod), "/validate", "application/json", review)
 	if rec.Code != 200 {
 		t.Fatalf("status %d: %s", rec.Code, rec.Body)
@@ -179,7 +179,7 @@ func TestHandlerRecordsErrors(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf bytes.Buffer
-			c := newTestCapturer(&buf)
+			c := newTestRecorder(&buf)
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(tc.method, "/capture", strings.NewReader(tc.body))
 			req.Header.Set("Content-Type", tc.ctype)
@@ -203,7 +203,7 @@ func TestHandlerRecordsErrors(t *testing.T) {
 		})
 	}
 	// Invalid JSON is kept, as a JSON string.
-	c := newTestCapturer(&bytes.Buffer{})
+	c := newTestRecorder(&bytes.Buffer{})
 	post(c.handler("capture", allow), "/capture", "application/json", "{not json")
 	if got := string(c.store.get(1).Request); got != `"{not json"` {
 		t.Fatalf("request = %s", got)
@@ -215,16 +215,16 @@ func TestHandlerRecordsErrors(t *testing.T) {
 	}
 }
 
-func TestCaptureDisabled(t *testing.T) {
+func TestRecordingDisabled(t *testing.T) {
 	var buf bytes.Buffer
-	c := newTestCapturer(&buf)
+	c := newTestRecorder(&buf)
 	c.enabled = false
 	if rec := post(c.handler("validate", validatePod), "/validate", "application/json", podReview); rec.Code != 200 {
 		t.Fatalf("status %d", rec.Code)
 	}
 	post(c.handler("validate", validatePod), "/validate", "text/plain", "x")
 	if buf.Len() != 0 || c.store.stats().Total != 0 || c.store.stats().Stored != 0 {
-		t.Fatalf("captured while disabled: %q %+v", buf.String(), c.store.stats())
+		t.Fatalf("recorded while disabled: %q %+v", buf.String(), c.store.stats())
 	}
 }
 
@@ -259,7 +259,7 @@ const secretReview = `{"apiVersion":"admission.k8s.io/v1","kind":"AdmissionRevie
 
 func TestRedactSecret(t *testing.T) {
 	var buf bytes.Buffer
-	c := newTestCapturer(&buf)
+	c := newTestRecorder(&buf)
 	var seen string
 	review := func(req *AdmissionRequest) *AdmissionResponse {
 		seen = string(req.Object) + string(req.OldObject)
@@ -296,12 +296,12 @@ func TestRedactSecret(t *testing.T) {
 
 	// Non-secrets and disabled redaction are left untouched.
 	// Only Secrets are redacted (a pod body is recorded byte for byte).
-	c = newTestCapturer(&bytes.Buffer{})
+	c = newTestRecorder(&bytes.Buffer{})
 	post(c.handler("capture", allow), "/capture", "application/json", podReview)
 	if string(c.store.get(1).Request) != podReview {
 		t.Fatal("pod body changed")
 	}
-	c = newTestCapturer(&bytes.Buffer{})
+	c = newTestRecorder(&bytes.Buffer{})
 	c.redact = false
 	post(c.handler("capture", allow), "/capture", "application/json", secretReview)
 	if !strings.Contains(string(c.store.get(1).Request), "hunter2") {
@@ -310,7 +310,7 @@ func TestRedactSecret(t *testing.T) {
 }
 
 func TestRedactFailsClosed(t *testing.T) {
-	c := newTestCapturer(&bytes.Buffer{})
+	c := newTestRecorder(&bytes.Buffer{})
 	// A Secret whose body is not decodable (simulated: summary says Secret).
 	rec := &Record{Kind: &GroupVersionKind{Version: "v1", Kind: "Secret"}, Request: json.RawMessage(`"password=hunter2"`)}
 	c.record(rec)
@@ -325,10 +325,10 @@ func TestRedactFailsClosed(t *testing.T) {
 	}
 }
 
-func TestCaptureStdoutModes(t *testing.T) {
+func TestRecordStdoutModes(t *testing.T) {
 	for _, mode := range []string{stdoutFull, stdoutSummary, stdoutOff} {
 		var buf bytes.Buffer
-		c := newTestCapturer(&buf)
+		c := newTestRecorder(&buf)
 		c.stdout = mode
 		post(c.handler("mutate", mutatePod), "/mutate", "application/json", podReview)
 		post(c.handler("mutate", mutatePod), "/mutate", "text/plain", "x")
@@ -370,7 +370,7 @@ func TestCaptureStdoutModes(t *testing.T) {
 }
 
 func TestHandlerRejectsOversizedBody(t *testing.T) {
-	c := newTestCapturer(&bytes.Buffer{})
+	c := newTestRecorder(&bytes.Buffer{})
 	big := `{"x":"` + strings.Repeat("a", maxBody) + `"}`
 	if rec := post(c.handler("capture", allow), "/capture", "application/json", big); rec.Code != 400 {
 		t.Fatalf("status %d", rec.Code)
@@ -397,7 +397,7 @@ func TestStoreKeepsIDOrder(t *testing.T) {
 func TestHealthzFlipsDuringShutdown(t *testing.T) {
 	var ready atomic.Bool
 	ready.Store(true)
-	mux := newWebhookMux(newTestCapturer(&bytes.Buffer{}), &ready)
+	mux := newWebhookMux(newTestRecorder(&bytes.Buffer{}), &ready)
 	get := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
@@ -414,8 +414,8 @@ func TestHealthzFlipsDuringShutdown(t *testing.T) {
 
 func TestWebhookMuxHasNoAPI(t *testing.T) {
 	var ready atomic.Bool
-	mux := newWebhookMux(newTestCapturer(&bytes.Buffer{}), &ready)
-	for _, p := range []string{"/api/captures", "/api/stats", "/"} {
+	mux := newWebhookMux(newTestRecorder(&bytes.Buffer{}), &ready)
+	for _, p := range []string{"/api/records", "/api/stats", "/"} {
 		rec := httptest.NewRecorder()
 		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
 		if rec.Code != http.StatusNotFound {

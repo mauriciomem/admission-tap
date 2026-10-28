@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Removes admission-tap from the cluster kubectl currently points at.
+# Removes admission-tap and its demo namespaces from the cluster kubectl
+# currently points at.
 #
 # Usage:  scripts/undeploy.sh
 #
@@ -16,7 +17,7 @@ echo "==> 1/3 Delete the capture webhook"
 kubectl delete validatingwebhookconfiguration admission-tap-capture --ignore-not-found
 
 # ---------------------------------------------------------------------------
-echo "==> 2/3 Delete the example webhooks"
+echo "==> 2/3 Delete the mutate/validate webhooks"
 # Same reason as above. These have failurePolicy Fail, so leaving them behind
 # would block Pod creation in labelled namespaces.
 kubectl delete validatingwebhookconfiguration admission-tap --ignore-not-found
@@ -24,9 +25,14 @@ kubectl delete mutatingwebhookconfiguration admission-tap --ignore-not-found
 
 # ---------------------------------------------------------------------------
 echo "==> 3/3 Delete the namespaces"
-# Removes the demo namespace and the server's namespace with everything in it
+# Removes the two demo namespaces (examples/capture and examples/mutate-validate,
+# if you created them) and the server's namespace with everything in it
 # (Deployment, Service, Secrets).
-kubectl delete namespace admission-tap-demo admission-tap --ignore-not-found
+kubectl delete namespace \
+  admission-tap-capture-demo \
+  admission-tap-mutate-validate-demo \
+  admission-tap \
+  --ignore-not-found
 
 echo
 echo "Done. Local certificates and the API token were kept."

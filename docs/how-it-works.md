@@ -24,9 +24,9 @@ For each matching request, the API server POSTs an `AdmissionReview` to the webh
     "uid": "705ab4f5-...",
     "kind": {"group": "", "version": "v1", "kind": "Pod"},
     "resource": {"group": "", "version": "v1", "resource": "pods"},
-    "namespace": "admission-tap-demo",
+    "namespace": "admission-tap-mutate-validate-demo",
     "operation": "CREATE",
-    "userInfo": {"username": "kubernetes-admin", "groups": ["system:authenticated"]},
+    "userInfo": {"username": "kubernetes-admin", "groups": ["kubeadm:cluster-admins", "system:authenticated"]},
     "object": { "...": "the full Pod" },
     "dryRun": false
   }
@@ -99,27 +99,33 @@ The API is never exposed on the webhook port.
 
 ## The three webhook configurations
 
-The example webhooks are in `deploy/20-webhooks.yaml`. The capture webhook is in `deploy/30-capture.yaml`.
+The mutate and validate webhooks are in `deploy/20-webhooks.yaml`. The capture webhook is in `deploy/30-capture.yaml`. Each one has its own namespace label, and `scripts/deploy.sh` can leave either file out (see [Deploying](deploying.md#choosing-which-webhooks-to-register)).
 
 ### `MutatingWebhookConfiguration/admission-tap`
 
-- Webhook `mutate-pods`, path `/mutate`.
+- Webhook `mutate-pods.admission-tap.dev`, path `/mutate`.
 - Pod CREATE, in namespaces labelled `admission-tap=enabled`.
 - `failurePolicy: Fail`, 5s timeout.
 
+Adds the label `admission-tap/mutated=true` to new Pods. See [The mutate webhook](mutate-validate.md#the-mutate-webhook).
+
 ### `ValidatingWebhookConfiguration/admission-tap`
 
-- Webhook `validate-pods`, path `/validate`.
+- Webhook `validate-pods.admission-tap.dev`, path `/validate`.
 - Pod CREATE and UPDATE, in namespaces labelled `admission-tap=enabled`.
 - `failurePolicy: Fail`, 5s timeout.
 
+Rejects Pods whose images are untagged or use `:latest`. See [The validate webhook](mutate-validate.md#the-validate-webhook).
+
 ### `ValidatingWebhookConfiguration/admission-tap-capture`
 
-- Webhook `capture-all`, path `/capture`.
+- Webhook `capture-all.admission-tap.dev`, path `/capture`.
 - Every namespaced resource and subresource, every operation, in namespaces labelled `admission-tap/capture=enabled`.
 - Plus the Namespace objects with that label.
 - Never the `admission-tap` namespace.
 - `failurePolicy: Ignore`, 2s timeout.
+
+Records every write and always allows it. See [Capture](capture.md#what-capture-does).
 
 
 ## The fields worth knowing
@@ -141,4 +147,4 @@ The example webhooks are in `deploy/20-webhooks.yaml`. The capture webhook is in
 
 `reinvocationPolicy: Never` means the mutating webhook isn't called again if a later mutating webhook changes the object.
 
-There are no `matchConditions`. CEL expressions there can't see namespace labels. As a result, a Pod created in the demo namespace is recorded three times: by mutate, validate and capture. Each record has a `webhook` field so you can tell them apart.
+There are no `matchConditions`. CEL expressions there can't see namespace labels. As a result, a Pod created in a namespace with both labels is recorded three times: by mutate, validate and capture. Each record has a `webhook` field so you can tell them apart (see [Records](records.md#what-a-record-is)).

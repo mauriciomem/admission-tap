@@ -1,18 +1,18 @@
-# Observe-only capture of every admission call, opt-in per namespace.
-# - Label a namespace admission-tap/capture=enabled to capture it. This is
+# Capture webhook: observe-only, records everything written in a namespace.
+# - Opt-in per namespace: label it admission-tap/capture=enabled. This is
 #   independent of admission-tap=enabled, which only turns on the example
-#   mutate/validate webhooks.
-# - Captured: all namespaced resources, subresources and operations (incl.
+#   mutate/validate webhooks (20-webhooks.yaml).
+# - Recorded: all namespaced resources, subresources and operations (incl.
 #   CONNECT for kubectl exec/attach/port-forward) in labelled namespaces, plus
 #   changes to the labelled Namespace objects themselves.
-# - Not captured: other cluster-scoped objects (nodes, CRDs, ...).
+# - Not recorded: other cluster-scoped objects (nodes, CRDs, ...).
 # - Never sent to any webhook, by Kubernetes design: reads (GET/LIST/WATCH) and
 #   Validating/MutatingWebhookConfiguration and ValidatingAdmissionPolicy(Binding)
 #   / MutatingAdmissionPolicy(Binding) objects.
 # - failurePolicy Ignore + timeoutSeconds 2: a down or hung pod must neither
 #   block nor noticeably slow the labelled namespaces.
 # - No matchConditions: CEL there cannot see namespace labels, so pods in a
-#   namespace with both labels are recorded by mutate, validate AND capture;
+#   namespace with both labels are recorded for mutate, validate AND capture;
 #   each record says which webhook it came from.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingWebhookConfiguration
@@ -29,7 +29,7 @@ webhooks:
       matchLabels:
         admission-tap/capture: enabled
       matchExpressions:
-        # Safety net: never capture the webhook's own namespace, even if labelled.
+        # Safety net: never send the webhook's own namespace here, even if labelled.
         - key: kubernetes.io/metadata.name
           operator: NotIn
           values: ["admission-tap"]

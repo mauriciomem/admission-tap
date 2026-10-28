@@ -18,20 +18,24 @@ The script is safe to re-run. Every step creates or updates, and existing certif
 When it finishes, it prints the next commands: label a namespace, read the token, port-forward to the API.
 
 
-## Deploying without capture
+## Choosing which webhooks to register
 
-Set `CAPTURE=false` to run only the example mutate and validate webhooks:
+Two variables decide which webhooks the script registers. Both default to `true`:
+
+- `MUTATE_VALIDATE` registers the [mutate and validate](mutate-validate.md) webhooks (step 8).
+- `CAPTURE` registers the [capture](capture.md) webhook (step 9).
+
+Set one to `false` and the script doesn't register those webhooks. If they exist from an earlier run, it deletes them. For example, to run only mutate and validate:
 
 ```bash
 CAPTURE=false IMG=$IMG scripts/deploy.sh
 ```
 
-This does two things:
+The server is deployed the same way whatever you choose, and records every call it receives. So with `CAPTURE=false`, mutate and validate keep working and their calls are still recorded. With `MUTATE_VALIDATE=false`, only capture calls arrive.
 
-- The server runs with `-capture=false`, so nothing is written to stdout or kept in the store.
-- The `admission-tap-capture` webhook is not registered. If it exists from an earlier run, it's deleted.
+With both set to `false`, no webhooks are registered, the server receives no calls, and the script says so when it finishes.
 
-The query API still runs, but stays empty.
+To stop recording while keeping the webhooks, use the server flag `-record=false` instead (see [Records](records.md#turning-recording-off)).
 
 
 ## The steps
@@ -90,7 +94,7 @@ kubectl -n admission-tap create secret generic admission-tap-api-token \
 
 ### 6. Deploy the server
 
-`deploy/10-server.yaml` holds the ServiceAccount, the Deployment and the Service. It has three placeholders: `__IMAGE__`, `__CAPTURE__` and `__SECRETS_CHECKSUM__`.
+`deploy/10-server.yaml` holds the ServiceAccount, the Deployment and the Service. It has two placeholders: `__IMAGE__` and `__SECRETS_CHECKSUM__`. It sets no server args, so every flag has its default and recording is on.
 
 The server reads the certificate and the token only at startup, and updating a Secret doesn't restart Pods. So the script hashes the three files and stores the result in a Pod template annotation, `checksum/secrets`. If any file changed, the annotation changes and Kubernetes rolls the Pod. If none did, the Deployment is unchanged and nothing restarts.
 
@@ -104,8 +108,8 @@ SECRETS_CHECKSUM=$(cat certs/tls.crt certs/tls.key certs/api-token \
 Replace the placeholders with `sed` and apply the result:
 
 ```bash
-sed -e "s|__IMAGE__|$IMG|" -e "s|__CAPTURE__|true|" \
-  -e "s|__SECRETS_CHECKSUM__|$SECRETS_CHECKSUM|" deploy/10-server.yaml \
+sed -e "s|__IMAGE__|$IMG|" -e "s|__SECRETS_CHECKSUM__|$SECRETS_CHECKSUM|" \
+  deploy/10-server.yaml \
   | kubectl apply -f -
 ```
 
@@ -115,11 +119,14 @@ The Service exposes port 443 for the webhooks and port 80 for the query API.
 
 ```bash
 kubectl -n admission-tap rollout status deploy/admission-tap --timeout=120s
+kubectl -n admission-tap get pods -l app=admission-tap
 ```
 
-This matters. The example webhooks use `failurePolicy: Fail`. If they were registered before the server is ready, Pod creation in labelled namespaces would fail.
+On an update, `rollout status` returns when the new Pod is Ready, but the old Pod is still terminating: it keeps serving for `-shutdown-delay` (5 seconds by default). Run the second command until only one Pod is listed, so that `kubectl logs` and `kubectl port-forward` reach the new one. The script does this for you, waiting up to 30 seconds.
 
-### 8. Register the example webhooks
+This matters. The mutate and validate webhooks use `failurePolicy: Fail`. If they were registered before the server is ready, Pod creation in labelled namespaces would fail.
+
+### 8. Register the mutate and validate webhooks
 
 The webhook configurations need the CA, base64-encoded on a single line, in `caBundle`. Encode it once:
 
@@ -135,6 +142,15 @@ sed "s|__CA_BUNDLE__|$CA_BUNDLE|" deploy/20-webhooks.yaml | kubectl apply -f -
 
 This registers the mutate and validate webhooks for namespaces labelled `admission-tap=enabled`.
 
+With `MUTATE_VALIDATE=false`, the script deletes them instead:
+
+```bash
+kubectl delete mutatingwebhookconfiguration admission-tap --ignore-not-found
+kubectl delete validatingwebhookconfiguration admission-tap --ignore-not-found
+```
+
+Leaving them behind would keep Pod creation in labelled namespaces dependent on the server.
+
 ### 9. Register the capture webhook
 
 ```bash
@@ -147,14 +163,14 @@ With `CAPTURE=false`, the script deletes it instead:
 kubectl delete validatingwebhookconfiguration admission-tap-capture --ignore-not-found
 ```
 
-Nothing is captured yet. Label a namespace to opt it in, as described in [Capturing](capturing.md).
+Nothing is intercepted yet. Label a namespace to opt it in, as described in [Capture](capture.md#turning-capture-on-and-off) and [Mutate and validate](mutate-validate.md#turning-them-on-and-off).
 
 
 ## Changing things after deploying
 
 The server reads its certificate and token once, at startup. When `certs/tls.crt`, `certs/tls.key` or `certs/api-token` change, re-running the script restarts the server automatically (see step 6).
 
-When you rotate the certificates (delete `certs/` and re-run the script), the new server certificate and the webhooks' `caBundle` are briefly out of sync, between step 6 and step 8. For a few seconds, Pod writes in namespaces with the example webhooks (`failurePolicy: Fail`) can fail. Capture just skips those calls (`failurePolicy: Ignore`).
+When you rotate the certificates (delete `certs/` and re-run the script), the new server certificate and the webhooks' `caBundle` are briefly out of sync, between step 6 and step 8. For a few seconds, Pod writes in namespaces with the mutate and validate webhooks (`failurePolicy: Fail`) can fail. Capture just skips those calls (`failurePolicy: Ignore`).
 
 To rotate the API token, delete `certs/api-token` and re-run the script.
 
@@ -166,7 +182,7 @@ kubectl -n admission-tap rollout restart deploy/admission-tap
 
 Rebuilding the image under the same tag does not restart anything. The Deployment uses `imagePullPolicy: IfNotPresent`, so prefer a new tag and re-run the script.
 
-To change server flags, edit `args` in `deploy/10-server.yaml` and re-run the script. The flags are listed in [Configuration](configuration.md).
+To change server flags, add `args` to the container in `deploy/10-server.yaml` and re-run the script. See [Configuration](configuration.md#setting-flags).
 
 
 ## Undeploying
@@ -181,15 +197,16 @@ It runs these commands, in this order:
 kubectl delete validatingwebhookconfiguration admission-tap-capture --ignore-not-found
 kubectl delete validatingwebhookconfiguration admission-tap --ignore-not-found
 kubectl delete mutatingwebhookconfiguration admission-tap --ignore-not-found
-kubectl delete namespace admission-tap-demo admission-tap --ignore-not-found
+kubectl delete namespace admission-tap-capture-demo admission-tap-mutate-validate-demo admission-tap --ignore-not-found
 ```
 
 The webhook configurations go first, so the API server stops calling a server that's about to disappear.
 
-The demo namespace is deleted too. Labels on your own namespaces are left as they are. They do nothing once the webhooks are gone, but you can remove them:
+The two example namespaces, from `examples/capture/` and `examples/mutate-validate/`, are deleted too. Labels on your own namespaces are left as they are. They do nothing once the webhooks are gone, but you can remove them:
 
 ```bash
-kubectl label namespace <ns> admission-tap/capture-
+kubectl label namespace <ns> admission-tap/capture-   # capture
+kubectl label namespace <ns> admission-tap-           # mutate and validate
 ```
 
 `certs/` is kept, so a later deploy reuses the same CA and token. Delete it with `rm -rf certs`.

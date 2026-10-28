@@ -1,7 +1,0 @@
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: admission-tap-demo
-  labels:
-    admission-tap: enabled # example mutate/validate webhooks
-    admission-tap/capture: enabled # capture webhook

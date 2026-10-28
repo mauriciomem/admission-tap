@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: web-ok
-  namespace: admission-tap-demo
+  namespace: admission-tap-mutate-validate-demo
 spec:
   containers:
     - name: web

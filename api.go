@@ -13,18 +13,18 @@ import (
 	"time"
 )
 
-const apiHelp = `admission-tap capture API
+const apiHelp = `admission-tap query API
 
 All /api/* endpoints need: Authorization: Bearer <token>
 (the token is key "token" of Secret admission-tap-api-token in namespace admission-tap)
 
   GET    /healthz             liveness
   GET    /api/stats           counters and store usage
-  GET    /api/captures        captured calls, newest first
-  GET    /api/captures/{id}   one full record
-  DELETE /api/captures        clear the store
+  GET    /api/records         recorded calls, newest first
+  GET    /api/records/{id}    one full record
+  DELETE /api/records         clear the store
 
-/api/captures query parameters (optional, AND-combined, case-insensitive):
+/api/records query parameters (optional, AND-combined, case-insensitive):
   webhook=mutate|validate|capture   namespace=  name=  kind=  resource=
   subresource=  operation=CREATE|UPDATE|DELETE|CONNECT  user= (substring)
   allowed=true|false  errors=true|false (true: only failed calls, false: only calls without error)
@@ -32,7 +32,7 @@ All /api/* endpoints need: Authorization: Bearer <token>
   limit=N (default 50; capped at 100 with payloads, at the store size with summary=true)
   summary=true (drop payloads)
 
-Example: curl -H "Authorization: Bearer $TOKEN" 'localhost:8080/api/captures?kind=Secret&summary=true'
+Example: curl -H "Authorization: Bearer $TOKEN" 'localhost:8080/api/records?kind=Secret&summary=true'
 `
 
 const (
@@ -75,7 +75,7 @@ func requireToken(token string, h http.HandlerFunc) http.HandlerFunc {
 
 // newAPIMux returns the plain-HTTP query API. It is served on its own
 // listener, never on the webhook TLS port. /api/* requires token.
-func newAPIMux(c *capturer, token string) *http.ServeMux {
+func newAPIMux(rc *recorder, token string) *http.ServeMux {
 	mux := http.NewServeMux()
 	api := func(pattern string, h http.HandlerFunc) { mux.HandleFunc(pattern, requireToken(token, h)) }
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, _ *http.Request) {
@@ -84,23 +84,23 @@ func newAPIMux(c *capturer, token string) *http.ServeMux {
 	})
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
 	api("GET /api/stats", func(w http.ResponseWriter, _ *http.Request) {
-		st := c.store.stats()
-		st.CaptureEnabled, st.RedactSecrets = c.enabled, c.redact
+		st := rc.store.stats()
+		st.RecordEnabled, st.RedactSecrets = rc.enabled, rc.redact
 		writeJSON(w, http.StatusOK, st)
 	})
-	api("GET /api/captures", func(w http.ResponseWriter, r *http.Request) { listCaptures(w, r, c.store) })
-	api("DELETE /api/captures", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]int{"removed": c.store.clear()})
+	api("GET /api/records", func(w http.ResponseWriter, r *http.Request) { listRecords(w, r, rc.store) })
+	api("DELETE /api/records", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]int{"removed": rc.store.clear()})
 	})
-	api("GET /api/captures/{id}", func(w http.ResponseWriter, r *http.Request) {
+	api("GET /api/records/{id}", func(w http.ResponseWriter, r *http.Request) {
 		id, err := strconv.ParseUint(r.PathValue("id"), 10, 64)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "id must be a positive integer")
 			return
 		}
-		rec := c.store.get(id)
+		rec := rc.store.get(id)
 		if rec == nil {
-			writeError(w, http.StatusNotFound, fmt.Sprintf("capture %d not found (never existed or evicted)", id))
+			writeError(w, http.StatusNotFound, fmt.Sprintf("record %d not found (never existed or evicted)", id))
 			return
 		}
 		writeJSON(w, http.StatusOK, rec)
@@ -108,7 +108,7 @@ func newAPIMux(c *capturer, token string) *http.ServeMux {
 	return mux
 }
 
-func listCaptures(w http.ResponseWriter, r *http.Request, s *store) {
+func listRecords(w http.ResponseWriter, r *http.Request, s *store) {
 	keep, limit, summaryOnly, err := parseQuery(r, s.maxEntries)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -197,7 +197,7 @@ func parseQuery(r *http.Request, maxLimit int) (keep func(*Record) bool, limit i
 		} else if t, perr := time.Parse(time.RFC3339Nano, v); perr == nil {
 			add(func(r *Record) bool { return r.Time.After(t) })
 		} else {
-			return nil, 0, false, fmt.Errorf("since must be a capture id or an RFC3339 time")
+			return nil, 0, false, fmt.Errorf("since must be a record id or an RFC3339 time")
 		}
 	}
 	limit = defaultLimit

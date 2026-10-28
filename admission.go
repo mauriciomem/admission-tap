@@ -76,14 +76,14 @@ type reviewFunc func(*AdmissionRequest) *AdmissionResponse
 const maxBody = 3 << 20 // API server objects top out around 1.5 MiB
 
 // handler serves one webhook path. Every call, accepted or rejected, is
-// handed to the capturer together with its HTTP metadata.
-func (c *capturer) handler(name string, review reviewFunc) http.HandlerFunc {
+// handed to the recorder together with its HTTP metadata.
+func (rc *recorder) handler(name string, review reviewFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		rec := &Record{Time: start.UTC(), Webhook: name, HTTP: httpInfo(r)}
 		defer func() {
 			rec.DurationMs = float64(time.Since(start).Microseconds()) / 1000
-			c.record(rec)
+			rc.record(rec)
 		}()
 		fail := func(status int, msg string) {
 			rec.Status, rec.Error = status, msg

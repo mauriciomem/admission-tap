@@ -59,8 +59,8 @@ type TLSInfo struct {
 	ServerName  string `json:"serverName,omitempty"`
 }
 
-// summary is the payload-free view returned by /api/captures?summary=true and
-// printed by -capture-stdout=summary (one struct, so both always agree).
+// summary is the payload-free view returned by /api/records?summary=true and
+// printed by -record-stdout=summary (one struct, so both always agree).
 type summary struct {
 	ID          uint64                `json:"id"`
 	Time        time.Time             `json:"time"`
@@ -177,9 +177,9 @@ func redactSecret(body []byte) ([]byte, error) {
 var redactionFailed = json.RawMessage(`"<redaction failed>"`)
 
 // ---------------------------------------------------------------------------
-// capturer: stdout sink + in-memory store
+// recorder: stdout sink + in-memory store
 
-// Values for -capture-stdout.
+// Values for -record-stdout.
 const (
 	stdoutFull    = "full"    // whole record, payloads included
 	stdoutSummary = "summary" // payload-free line
@@ -190,7 +190,9 @@ func validStdoutMode(m string) bool {
 	return m == stdoutFull || m == stdoutSummary || m == stdoutOff
 }
 
-type capturer struct {
+// recorder records every admission call the server receives, whichever webhook
+// path it arrived on (mutate, validate or capture).
+type recorder struct {
 	enabled bool   // false: nothing is written or stored
 	redact  bool   // redact Secret values before recording
 	stdout  string // stdoutFull, stdoutSummary or stdoutOff ("" means full)
@@ -201,40 +203,40 @@ type capturer struct {
 	mu     sync.Mutex // guards writes to out
 }
 
-func (c *capturer) record(rec *Record) {
-	if !c.enabled {
+func (rc *recorder) record(rec *Record) {
+	if !rc.enabled {
 		return
 	}
-	if c.redact && isSecret(rec) && rec.Request != nil {
+	if rc.redact && isSecret(rec) && rec.Request != nil {
 		if b, err := redactSecret(rec.Request); err == nil {
 			rec.Request = b
 		} else {
 			rec.Request = redactionFailed
 		}
 	}
-	rec.ID = c.nextID.Add(1)
+	rec.ID = rc.nextID.Add(1)
 
 	// Marshal outside any lock: records can be large. Under concurrency stdout
 	// lines may therefore appear slightly out of id order; the store re-sorts.
 	full, err := json.Marshal(rec)
 	if err != nil {
-		slog.Error("capture marshal", "err", err)
+		slog.Error("record marshal", "err", err)
 		return
 	}
 	line := full
-	switch c.stdout {
+	switch rc.stdout {
 	case stdoutOff:
 		line = nil
 	case stdoutSummary:
 		line, _ = json.Marshal(rec.summary())
 	}
-	if c.out != nil && line != nil {
-		c.mu.Lock()
-		c.out.Write(append(line, '\n'))
-		c.mu.Unlock()
+	if rc.out != nil && line != nil {
+		rc.mu.Lock()
+		rc.out.Write(append(line, '\n'))
+		rc.mu.Unlock()
 	}
-	if c.store != nil {
-		c.store.add(rec, len(full))
+	if rc.store != nil {
+		rc.store.add(rec, len(full))
 	}
 }
 
@@ -338,18 +340,18 @@ func (s *store) clear() int {
 }
 
 type stats struct {
-	CaptureEnabled bool              `json:"captureEnabled"`
-	RedactSecrets  bool              `json:"redactSecrets"`
-	Stored         int               `json:"stored"`
-	StoredBytes    int               `json:"storedBytes"`
-	MaxEntries     int               `json:"maxEntries"`
-	MaxBytes       int               `json:"maxBytes"`
-	Total          uint64            `json:"total"`
-	Evicted        uint64            `json:"evicted"`
-	Denied         uint64            `json:"denied"`
-	Errors         uint64            `json:"errors"`
-	ByWebhook      map[string]uint64 `json:"byWebhook"`
-	ByOperation    map[string]uint64 `json:"byOperation"`
+	RecordEnabled bool              `json:"recordEnabled"`
+	RedactSecrets bool              `json:"redactSecrets"`
+	Stored        int               `json:"stored"`
+	StoredBytes   int               `json:"storedBytes"`
+	MaxEntries    int               `json:"maxEntries"`
+	MaxBytes      int               `json:"maxBytes"`
+	Total         uint64            `json:"total"`
+	Evicted       uint64            `json:"evicted"`
+	Denied        uint64            `json:"denied"`
+	Errors        uint64            `json:"errors"`
+	ByWebhook     map[string]uint64 `json:"byWebhook"`
+	ByOperation   map[string]uint64 `json:"byOperation"`
 }
 
 func (s *store) stats() stats {

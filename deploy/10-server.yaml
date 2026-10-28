@@ -36,11 +36,12 @@ spec:
         - name: webhook
           image: __IMAGE__
           imagePullPolicy: IfNotPresent
-          args: ["-capture=__CAPTURE__"]
+          # The server flags are documented in docs/configuration.md; the
+          # defaults apply (recording on). Add `args: [...]` here to change them.
           ports:
             - name: https
               containerPort: 8443
-            - name: http # capture query API (plain HTTP)
+            - name: http # query API (plain HTTP)
               containerPort: 8080
           readinessProbe: # /healthz returns 503 during -shutdown-delay
             httpGet:
@@ -58,7 +59,7 @@ spec:
             timeoutSeconds: 2
             failureThreshold: 3
           resources:
-            # The capture store holds up to 32 MiB by default (-capture-max-bytes).
+            # The in-memory record store holds up to 32 MiB by default (-record-max-bytes).
             requests: { cpu: 10m, memory: 32Mi }
             limits: { memory: 256Mi }
           securityContext:

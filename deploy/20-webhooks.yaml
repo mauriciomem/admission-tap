@@ -1,5 +1,14 @@
-# Only namespaces labelled admission-tap=enabled are intercepted, so a broken
-# webhook can never lock you out of kube-system or the webhook's own namespace.
+# Example mutate/validate webhooks (Pods only).
+# - Opt-in per namespace: only namespaces labelled admission-tap=enabled are
+#   intercepted, so a broken webhook can never lock you out of kube-system or
+#   the webhook's own namespace. Independent of the capture label
+#   (admission-tap/capture=enabled, see 30-capture.yaml).
+# - mutate-pods handles Pod CREATE: it adds the label admission-tap/mutated=true.
+# - validate-pods handles Pod CREATE and UPDATE: it rejects Pods whose images
+#   use :latest or no tag.
+# - Both have failurePolicy Fail, so while the server is down, Pod creates (and
+#   updates, via validate-pods) in labelled namespaces fail.
+# - The server records every call it receives from these webhooks.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:
